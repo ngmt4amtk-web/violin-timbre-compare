@@ -171,13 +171,7 @@
   // ── リアルタイムモード UI更新 ──
 
   function updateRealtimeUI(metrics) {
-    if (!metrics) {
-      for (const m of METRICS) {
-        const valEl = $(`val-${m.key}`);
-        if (valEl) valEl.style.opacity = '0.3';
-      }
-      return;
-    }
+    if (!metrics) return; // 無音時は最後の表示を維持
 
     for (const m of METRICS) {
       const val = metrics[m.key];
