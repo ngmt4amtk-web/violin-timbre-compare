@@ -302,8 +302,32 @@
 
   // ── 基準録音 ──
 
+  const COUNTDOWN_SEC = 3;
+  let countdownId = null;
+
   function startRefRecording() {
-    if (refRecording) return;
+    if (refRecording || countdownId) return;
+
+    // カウントダウン開始
+    $('btn-record-ref').disabled = true;
+    $('ref-progress').style.display = '';
+    $('ref-progress-bar').style.width = '0%';
+    $('ref-countdown').textContent = COUNTDOWN_SEC;
+    $('btn-record-ref').textContent = '準備中…';
+
+    let remaining = COUNTDOWN_SEC;
+    countdownId = setInterval(() => {
+      remaining--;
+      $('ref-countdown').textContent = remaining;
+      if (remaining <= 0) {
+        clearInterval(countdownId);
+        countdownId = null;
+        beginRefCapture();
+      }
+    }, 1000);
+  }
+
+  function beginRefCapture() {
     refRecording = true;
     refFrames = [];
     refStartTime = performance.now();
@@ -311,8 +335,8 @@
 
     $('btn-record-ref').textContent = '録音中…';
     $('btn-record-ref').classList.add('recording');
-    $('ref-progress').style.display = '';
     $('ref-progress-bar').style.width = '0%';
+    $('ref-countdown').textContent = '';
 
     setTimeout(finishRefRecording, REF_DURATION);
   }
@@ -321,14 +345,15 @@
     const elapsed = performance.now() - refStartTime;
     const pct = Math.min(100, (elapsed / REF_DURATION) * 100);
     $('ref-progress-bar').style.width = pct + '%';
-    const remaining = Math.max(0, Math.ceil((REF_DURATION - elapsed) / 1000));
-    $('ref-countdown').textContent = remaining;
+    const sec = Math.max(0, Math.ceil((REF_DURATION - elapsed) / 1000));
+    $('ref-countdown').textContent = sec > 0 ? sec : '';
   }
 
   function finishRefRecording() {
     refRecording = false;
     $('btn-record-ref').textContent = '基準を録る';
     $('btn-record-ref').classList.remove('recording');
+    $('btn-record-ref').disabled = false;
     $('ref-progress').style.display = 'none';
 
     if (refFrames.length < 5) {
