@@ -13,8 +13,6 @@ const Features = (() => {
     const statsWindow = Math.max(10, Math.round(effectiveFPS * 0.5));
     f0Stats.setWindow(statsWindow);
     scStats.setWindow(statsWindow);
-    // ビブラートバッファもリセット
-    vibratoF0Buf.length = 0;
   }
 
   // ── ユーティリティ ──
