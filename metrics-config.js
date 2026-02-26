@@ -1,4 +1,4 @@
-// metrics-config.js — 37指標の定義・要因ラベル・表示設定 v2
+// metrics-config.js — 34指標の定義・要因ラベル・表示設定 v3
 
 // CSV出力用: 有効数字を保つフォーマッタ
 function csvFormat(v) {

@@ -1,5 +1,5 @@
 // features.js — 音響特徴量計算エンジン v3
-// 37指標 + onset検出 + configurable FPS
+// 34指標 + onset検出 + configurable FPS
 
 const Features = (() => {
 
