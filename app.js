@@ -254,9 +254,18 @@
     if (reference) updateTop3(metrics);
   }
 
+  // TOP3: harmonicDetailカテゴリは除外、更新は0.5秒間隔
+  let lastTop3Update = 0;
+  const TOP3_INTERVAL = 500;
+
   function updateTop3(metrics) {
+    const now = performance.now();
+    if (now - lastTop3Update < TOP3_INTERVAL) return;
+    lastTop3Update = now;
+
     const diffs = [];
     for (const m of METRICS) {
+      if (m.category === 'harmonicDetail') continue;
       const cur = metrics[m.key];
       const ref = reference.metrics[m.key];
       if (cur === null || ref === null || ref === undefined) continue;
