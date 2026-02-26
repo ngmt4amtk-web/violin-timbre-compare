@@ -1,27 +1,33 @@
-// app.js — メインアプリケーション制御 v2
+// app.js — メインアプリケーション制御 v3 (AudioWorklet)
 
 (() => {
   'use strict';
 
-  const FORMAT_VERSION = '2.0';
+  const FORMAT_VERSION = '3.0';
 
   // ── 状態 ──
   let currentMode = 'realtime';
   let isRunning = false;
   let reference = null;
-  let animFrameId = null;
-  let audioParams = null; // { sampleRate, fftSize }
+  let audioParams = null; // { sampleRate, fftSize, hopSize }
 
   // データモード
   let dataRecording = false;
   let dataFrames = [];
-  let dataStartTime = 0;
+  let dataStartTimeAudio = 0;
+  let dataTotalReceived = 0;
+  let dataDroppedFrames = 0;
+  let dataExpectedSeq = -1;
 
   // 基準録音
   let refRecording = false;
   let refFrames = [];
   let refStartTime = 0;
   const REF_DURATION = 3000;
+
+  // UI throttle
+  let pendingMetrics = null;
+  let uiRafId = null;
 
   const $ = id => document.getElementById(id);
 
@@ -92,11 +98,15 @@
   async function startAudio() {
     try {
       audioParams = await AudioEngine.init();
+      Features.configure(audioParams.sampleRate, audioParams.hopSize);
       isRunning = true;
+
       $('screen-start').classList.remove('active');
       $('screen-realtime').classList.add('active');
       $('header').style.display = '';
-      requestAnimationFrame(loop);
+
+      // Workletフレームコールバック登録
+      AudioEngine.onFrame(handleFrame);
     } catch (e) {
       alert('マイクへのアクセスが必要です: ' + e.message);
     }
@@ -111,25 +121,50 @@
     $('screen-data').classList.toggle('active', mode === 'data');
   }
 
-  // ── メインループ ──
+  // ── Workletフレームハンドラ（~94fps） ──
 
-  function loop(timestamp) {
+  function handleFrame(buffers) {
     if (!isRunning) return;
-    animFrameId = requestAnimationFrame(loop);
 
-    const buffers = AudioEngine.getBuffers();
-    if (!buffers) return;
+    const audioTimeMs = buffers.time * 1000;
+    const metrics = Features.computeAll(buffers, audioTimeMs);
 
-    const metrics = Features.computeAll(buffers, timestamp);
-
-    if (currentMode === 'realtime') {
-      updateRealtimeUI(metrics);
-      if (refRecording) collectRefFrame(metrics, timestamp);
+    // ドロップフレーム検出（seq gap）
+    if (dataRecording && buffers.seq !== undefined) {
+      dataTotalReceived++;
+      if (dataExpectedSeq >= 0 && buffers.seq > dataExpectedSeq) {
+        dataDroppedFrames += (buffers.seq - dataExpectedSeq);
+      }
+      dataExpectedSeq = buffers.seq + 1;
     }
 
+    // データ収集（フルレート）
     if (currentMode === 'data' && dataRecording && metrics) {
-      dataFrames.push({ timestamp, metrics: { ...metrics } });
-      updateDataTimer();
+      dataFrames.push({
+        timestamp: audioTimeMs,
+        metrics: { ...metrics },
+        seq: buffers.seq,
+      });
+    }
+
+    // 基準録音収集
+    if (currentMode === 'realtime' && refRecording && metrics) {
+      refFrames.push({ ...metrics });
+    }
+
+    // UI更新（rAFでデバウンス → ディスプレイレート上限）
+    pendingMetrics = metrics;
+    if (!uiRafId) {
+      uiRafId = requestAnimationFrame(() => {
+        uiRafId = null;
+        if (currentMode === 'realtime') {
+          updateRealtimeUI(pendingMetrics);
+          if (refRecording) updateRefProgress();
+        }
+        if (currentMode === 'data' && dataRecording) {
+          updateDataTimer();
+        }
+      });
     }
   }
 
@@ -282,9 +317,7 @@
     setTimeout(finishRefRecording, REF_DURATION);
   }
 
-  function collectRefFrame(metrics, timestamp) {
-    if (!metrics) return;
-    refFrames.push({ ...metrics });
+  function updateRefProgress() {
     const elapsed = performance.now() - refStartTime;
     const pct = Math.min(100, (elapsed / REF_DURATION) * 100);
     $('ref-progress-bar').style.width = pct + '%';
@@ -344,7 +377,10 @@
   function startDataRecording() {
     dataRecording = true;
     dataFrames = [];
-    dataStartTime = performance.now();
+    dataStartTimeAudio = 0;
+    dataTotalReceived = 0;
+    dataDroppedFrames = 0;
+    dataExpectedSeq = -1;
     Features.resetState();
 
     $('data-status').textContent = '録音中';
@@ -357,7 +393,9 @@
   }
 
   function updateDataTimer() {
-    const elapsed = (performance.now() - dataStartTime) / 1000;
+    if (dataFrames.length === 0) return;
+    if (dataStartTimeAudio === 0) dataStartTimeAudio = dataFrames[0].timestamp;
+    const elapsed = (dataFrames[dataFrames.length - 1].timestamp - dataStartTimeAudio) / 1000;
     $('data-elapsed').textContent = elapsed.toFixed(1);
     $('data-frames').textContent = dataFrames.length;
   }
@@ -416,6 +454,7 @@
     const lastTs = dataFrames[dataFrames.length - 1].timestamp;
     const duration = (lastTs - firstTs) / 1000;
     const fps = dataFrames.length / duration;
+    const nominalFps = audioParams.sampleRate / audioParams.hopSize;
     const now = new Date();
     const dateStr = now.toISOString().slice(0, 19);
     const fileDateStr = [
@@ -437,14 +476,14 @@
     txt += `duration_sec: ${duration.toFixed(3)}\n`;
     txt += `total_frames: ${dataFrames.length}\n`;
     txt += `avg_fps: ${fps.toFixed(1)}\n`;
-    txt += `frame_timing: variable (requestAnimationFrame)\n`;
+    txt += `nominal_fps: ${nominalFps.toFixed(1)}\n`;
+    txt += `frame_timing: fixed (AudioWorklet, hop=${audioParams.hopSize})\n`;
 
     // 分析パラメータ
-    if (audioParams) {
-      txt += `sample_rate: ${audioParams.sampleRate}\n`;
-      txt += `fft_size: ${audioParams.fftSize}\n`;
-    }
-    txt += `window_function: Blackman (AnalyserNode default)\n`;
+    txt += `sample_rate: ${audioParams.sampleRate}\n`;
+    txt += `fft_size: ${audioParams.fftSize}\n`;
+    txt += `hop_size: ${audioParams.hopSize}\n`;
+    txt += `window_function: Hann\n`;
     txt += `f0_algorithm: YIN (threshold=0.15, parabolic interpolation)\n`;
     txt += `rms_unit: dBFS (full-scale reference)\n`;
     txt += `harmonic_amplitudes_unit: dBFS\n`;
@@ -460,6 +499,37 @@
       const sdInterval = Math.sqrt(intervals.reduce((s, v) => s + (v - avgInterval) * (v - avgInterval), 0) / intervals.length);
       txt += `frame_interval_ms: avg=${avgInterval.toFixed(2)} sd=${sdInterval.toFixed(2)} min=${Math.min(...intervals).toFixed(2)} max=${Math.max(...intervals).toFixed(2)}\n`;
     }
+    txt += '\n';
+
+    // ── [quality] ──
+    txt += '[quality]\n';
+    txt += '# data quality metrics\n';
+
+    const totalFrames = dataFrames.length;
+
+    // f0 detection ratio
+    const f0Frames = dataFrames.filter(f => f.metrics.f0 !== null).length;
+    txt += `f0_detection_ratio: ${(f0Frames / totalFrames).toFixed(3)}\n`;
+
+    // Vibrato saturation (near 15Hz upper limit)
+    const vibFrames = dataFrames.filter(f => f.metrics.vibratoRate !== null);
+    const satFrames = vibFrames.filter(f => f.metrics.vibratoRate > 14);
+    txt += `vibrato_saturation_ratio: ${vibFrames.length > 0 ? (satFrames.length / vibFrames.length).toFixed(3) : '0'}\n`;
+
+    // Dropped frames
+    const expectedFrames = Math.round(duration * audioParams.sampleRate / audioParams.hopSize);
+    txt += `expected_frames: ${expectedFrames}\n`;
+    txt += `received_frames: ${dataTotalReceived}\n`;
+    txt += `valid_frames: ${totalFrames}\n`;
+    txt += `dropped_frame_ratio: ${expectedFrames > 0 ? (Math.max(0, expectedFrames - dataTotalReceived) / expectedFrames).toFixed(3) : '0'}\n`;
+
+    // Tail silence
+    let tailSilence = 0;
+    for (let i = dataFrames.length - 1; i >= 0; i--) {
+      if (dataFrames[i].metrics.rms < -50) tailSilence++;
+      else break;
+    }
+    txt += `tail_silence_frames: ${tailSilence}\n`;
     txt += '\n';
 
     // ── [metrics_summary] ──
@@ -530,6 +600,9 @@
 
   function resetDataMode() {
     dataFrames = [];
+    dataTotalReceived = 0;
+    dataDroppedFrames = 0;
+    dataExpectedSeq = -1;
     $('data-status').textContent = '待機中';
     $('data-status').classList.remove('recording');
     $('btn-data-record').style.display = '';

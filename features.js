@@ -1,7 +1,21 @@
-// features.js — 音響特徴量計算エンジン v2
-// 37指標 + onset検出
+// features.js — 音響特徴量計算エンジン v3
+// 37指標 + onset検出 + configurable FPS
 
 const Features = (() => {
+
+  // ── 設定 ──
+
+  let effectiveFPS = 93.75; // default: 48000/512
+
+  function configure(sampleRate, hopSize) {
+    effectiveFPS = sampleRate / hopSize;
+    // ローリング統計を時間ベース（~0.5秒）に更新
+    const statsWindow = Math.max(10, Math.round(effectiveFPS * 0.5));
+    f0Stats.setWindow(statsWindow);
+    scStats.setWindow(statsWindow);
+    // ビブラートバッファもリセット
+    vibratoF0Buf.length = 0;
+  }
 
   // ── ユーティリティ ──
 
@@ -396,6 +410,10 @@ const Features = (() => {
       this.win = windowSize || 30;
       this.buf = [];
     }
+    setWindow(size) {
+      this.win = size;
+      while (this.buf.length > this.win) this.buf.shift();
+    }
     push(val) {
       if (val === null) return;
       this.buf.push(val);
@@ -414,8 +432,8 @@ const Features = (() => {
     reset() { this.buf = []; }
   }
 
-  const f0Stats = new RollingStats(30);
-  const scStats = new RollingStats(30);
+  const f0Stats = new RollingStats(47); // ~0.5s at 94fps
+  const scStats = new RollingStats(47);
 
   // ── Onset Detection ──
 
@@ -472,17 +490,23 @@ const Features = (() => {
   // ── Vibrato検出（閾値カットなし、自己相関ベース） ──
 
   const vibratoF0Buf = [];
-  const VIBRATO_WINDOW = 60; // ~2秒分 @ 30fps
+
+  function getVibratoWindow() {
+    return Math.max(20, Math.round(effectiveFPS * 2)); // 2秒分
+  }
 
   function detectVibrato(f0) {
     if (f0 === null) return { rate: null, depth: null, confidence: null };
 
+    const vibratoWindow = getVibratoWindow();
     vibratoF0Buf.push(f0);
-    if (vibratoF0Buf.length > VIBRATO_WINDOW) vibratoF0Buf.shift();
+    while (vibratoF0Buf.length > vibratoWindow) vibratoF0Buf.shift();
 
     // 有効なf0のみ抽出
     const valid = vibratoF0Buf.filter(v => v !== null);
-    if (valid.length < 10) return { rate: null, depth: null, confidence: null };
+    if (valid.length < Math.max(10, Math.round(effectiveFPS * 0.3))) {
+      return { rate: null, depth: null, confidence: null };
+    }
 
     const mean = valid.reduce((s, v) => s + v, 0) / valid.length;
     const centered = valid.map(v => v - mean);
@@ -492,8 +516,8 @@ const Features = (() => {
     if (energy === 0) return { rate: 0, depth: 0, confidence: 0 };
 
     // 自己相関でレート推定
-    const fps = 30;
-    const minLag = Math.max(1, Math.floor(fps / 10)); // 10Hz上限
+    const fps = effectiveFPS;
+    const minLag = Math.max(1, Math.floor(fps / 15)); // 15Hz上限
     const maxLag = Math.min(centered.length - 1, Math.floor(fps / 2)); // 2Hz下限
 
     let bestLag = 0, bestCorr = -1;
@@ -627,5 +651,5 @@ const Features = (() => {
     onsetDetector.reset();
   }
 
-  return { computeAll, resetState, getOnsets, computeRMS, detectF0 };
+  return { configure, computeAll, resetState, getOnsets, computeRMS, detectF0 };
 })();
