@@ -1,4 +1,5 @@
-// features.js — 23指標の計算エンジン
+// features.js — 音響特徴量計算エンジン v2
+// 37指標 + onset検出
 
 const Features = (() => {
 
@@ -20,7 +21,7 @@ const Features = (() => {
     return Math.round(freq * fftSize / sr);
   }
 
-  // ── YIN 基本周波数検出 ──
+  // ── YIN 基本周波数検出（信頼度付き） ──
 
   const YIN_THRESHOLD = 0.15;
 
@@ -43,26 +44,48 @@ const Features = (() => {
       yinBuf[tau] = yinBuf[tau] * tau / runSum;
     }
 
+    // 最小CMNDF値を追跡（信頼度の基盤）
+    let minCMNDF = 1;
+    let minTau = -1;
+
     let tau = 2;
     while (tau < halfLen) {
       if (yinBuf[tau] < YIN_THRESHOLD) {
         while (tau + 1 < halfLen && yinBuf[tau + 1] < yinBuf[tau]) tau++;
         break;
       }
+      if (yinBuf[tau] < minCMNDF) {
+        minCMNDF = yinBuf[tau];
+        minTau = tau;
+      }
       tau++;
     }
 
-    if (tau >= halfLen || yinBuf[tau] >= YIN_THRESHOLD) return -1;
+    if (tau >= halfLen || yinBuf[tau] >= YIN_THRESHOLD) {
+      // 検出失敗: 最小CMNDF値から信頼度を推定
+      return { freq: null, confidence: Math.max(0, 1 - minCMNDF) };
+    }
 
+    const cmndVal = yinBuf[tau];
+
+    // Parabolic interpolation
+    let betterTau = tau;
     if (tau > 0 && tau < halfLen - 1) {
       const s0 = yinBuf[tau - 1], s1 = yinBuf[tau], s2 = yinBuf[tau + 1];
       const denom = 2 * (2 * s1 - s2 - s0);
-      if (denom !== 0) return sr / (tau + (s2 - s0) / denom);
+      if (denom !== 0) betterTau = tau + (s2 - s0) / denom;
     }
-    return sr / tau;
+
+    const freq = sr / betterTau;
+    // バイオリン範囲外は棄却
+    if (freq < 180 || freq > 4800) {
+      return { freq: null, confidence: Math.max(0, 1 - cmndVal) * 0.3 };
+    }
+
+    return { freq, confidence: Math.max(0, 1 - cmndVal) };
   }
 
-  // ── RMS ──
+  // ── RMS (dBFS) ──
 
   function computeRMS(timeDomain) {
     let sum = 0;
@@ -73,10 +96,10 @@ const Features = (() => {
     return rms > 0 ? 20 * Math.log10(rms) : -100;
   }
 
-  // ── 倍音振幅取得 ──
+  // ── 倍音振幅取得（1回だけ計算、全倍音依存指標で共有） ──
 
   function getHarmonics(f0, freqDB, sr, fftSize, maxH) {
-    if (f0 <= 0) return [];
+    if (f0 === null || f0 <= 0) return null;
     maxH = maxH || 20;
     const mag = dbToLinear(freqDB);
     const nyquist = sr / 2;
@@ -96,7 +119,7 @@ const Features = (() => {
       }
       amps.push(peak);
     }
-    return amps;
+    return amps.length >= 2 ? amps : null;
   }
 
   // ── 1. Spectral Centroid ──
@@ -130,17 +153,12 @@ const Features = (() => {
 
   function spectralSlope(freqDB, sr, fftSize) {
     const mag = dbToLinear(freqDB);
-    const n = mag.length;
-    let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
-    let count = 0;
-    for (let i = 1; i < n; i++) {
+    let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0, count = 0;
+    for (let i = 1; i < mag.length; i++) {
       const f = binToFreq(i, sr, fftSize);
       if (f < 100 || f > 10000) continue;
       const y = mag[i] > 0 ? 20 * Math.log10(mag[i]) : -100;
-      sumX += f;
-      sumY += y;
-      sumXY += f * y;
-      sumXX += f * f;
+      sumX += f; sumY += y; sumXY += f * y; sumXX += f * f;
       count++;
     }
     if (count < 2) return 0;
@@ -162,90 +180,95 @@ const Features = (() => {
     return Math.min(1, Math.exp(logSum / cnt) / (linSum / cnt));
   }
 
-  // ── 5. Spectral Irregularity ──
+  // ── 5. Spectral Irregularity（倍音依存） ──
 
-  function spectralIrregularity(f0, freqDB, sr, fftSize) {
-    const amps = getHarmonics(f0, freqDB, sr, fftSize);
-    if (amps.length < 2) return 0;
+  function spectralIrregularity(harmonics) {
+    if (!harmonics || harmonics.length < 2) return null;
     let diffSum = 0, ampSum = 0;
-    for (let i = 0; i < amps.length - 1; i++) {
-      diffSum += Math.abs(amps[i] - amps[i + 1]);
-      ampSum += amps[i];
+    for (let i = 0; i < harmonics.length - 1; i++) {
+      diffSum += Math.abs(harmonics[i] - harmonics[i + 1]);
+      ampSum += harmonics[i];
     }
-    ampSum += amps[amps.length - 1];
-    return ampSum === 0 ? 0 : diffSum / ampSum;
+    ampSum += harmonics[harmonics.length - 1];
+    return ampSum === 0 ? null : diffSum / ampSum;
   }
 
-  // ── 6. Spectral Flux（前フレームとの差分） ──
+  // ── 6. Spectral Flux（dBドメイン） ──
 
-  let prevMag = null;
+  let prevFreqDB = null;
 
   function spectralFlux(freqDB) {
-    const mag = dbToLinear(freqDB);
-    if (!prevMag) {
-      prevMag = new Float32Array(mag);
+    if (!prevFreqDB) {
+      prevFreqDB = new Float32Array(freqDB);
       return 0;
     }
     let flux = 0;
-    for (let i = 0; i < mag.length; i++) {
-      const d = mag[i] - prevMag[i];
+    for (let i = 0; i < freqDB.length; i++) {
+      const d = freqDB[i] - prevFreqDB[i];
       flux += d * d;
     }
-    prevMag.set(mag);
-    return Math.sqrt(flux / mag.length);
+    prevFreqDB.set(freqDB);
+    return Math.sqrt(flux / freqDB.length); // dB単位
   }
 
-  function resetFlux() {
-    prevMag = null;
+  // ── 7. Spectral Rolloff (85%, 95%) ──
+
+  function spectralRolloff(freqDB, sr, fftSize, pct) {
+    const mag = dbToLinear(freqDB);
+    let totalE = 0;
+    for (let i = 1; i < mag.length; i++) totalE += mag[i] * mag[i];
+    if (totalE === 0) return 0;
+
+    const threshold = totalE * pct;
+    let cumE = 0;
+    for (let i = 1; i < mag.length; i++) {
+      cumE += mag[i] * mag[i];
+      if (cumE >= threshold) return binToFreq(i, sr, fftSize);
+    }
+    return sr / 2;
   }
 
-  // ── 7-9. Tristimulus T1/T2/T3 ──
+  // ── 8-10. Tristimulus T1/T2/T3（倍音依存） ──
 
-  function tristimulus(f0, freqDB, sr, fftSize) {
-    if (f0 <= 0) return { t1: 0, t2: 0, t3: 0 };
-    const amps = getHarmonics(f0, freqDB, sr, fftSize);
-    if (amps.length === 0) return { t1: 0, t2: 0, t3: 0 };
-    const total = amps.reduce((s, a) => s + a, 0);
-    if (total === 0) return { t1: 0, t2: 0, t3: 0 };
+  function tristimulus(harmonics) {
+    if (!harmonics) return { t1: null, t2: null, t3: null };
+    const total = harmonics.reduce((s, a) => s + a, 0);
+    if (total === 0) return { t1: null, t2: null, t3: null };
 
-    const t1 = amps[0] / total;
+    const t1 = harmonics[0] / total;
     let t2 = 0;
-    for (let i = 1; i < Math.min(4, amps.length); i++) t2 += amps[i];
+    for (let i = 1; i < Math.min(4, harmonics.length); i++) t2 += harmonics[i];
     t2 /= total;
     let t3 = 0;
-    for (let i = 4; i < amps.length; i++) t3 += amps[i];
+    for (let i = 4; i < harmonics.length; i++) t3 += harmonics[i];
     t3 /= total;
 
     return { t1, t2, t3 };
   }
 
-  // ── 10. Odd/Even Ratio ──
+  // ── 11. Odd/Even Ratio（倍音依存） ──
 
-  function oddEvenRatio(f0, freqDB, sr, fftSize) {
-    if (f0 <= 0) return 0;
-    const amps = getHarmonics(f0, freqDB, sr, fftSize);
-    if (amps.length < 3) return 0;
+  function oddEvenRatio(harmonics) {
+    if (!harmonics || harmonics.length < 3) return null;
     let odd = 0, even = 0;
-    for (let i = 0; i < amps.length; i++) {
-      if ((i + 1) % 2 === 1) odd += amps[i] * amps[i];
-      else even += amps[i] * amps[i];
+    for (let i = 0; i < harmonics.length; i++) {
+      if ((i + 1) % 2 === 1) odd += harmonics[i] * harmonics[i];
+      else even += harmonics[i] * harmonics[i];
     }
-    return even === 0 ? 0 : Math.sqrt(odd / even);
+    return even === 0 ? null : Math.sqrt(odd / even);
   }
 
-  // ── 11. Harmonic-to-Noise Ratio (HNR) ──
+  // ── 12. HNR（倍音依存） ──
 
   function harmonicToNoise(f0, freqDB, sr, fftSize) {
-    if (f0 <= 0) return 0;
+    if (f0 === null || f0 <= 0) return null;
     const mag = dbToLinear(freqDB);
     const binW = sr / fftSize;
     const radius = Math.max(1, Math.ceil(f0 / binW / 4));
     const nyquist = sr / 2;
 
     let harmonicE = 0, totalE = 0;
-    for (let i = 1; i < mag.length; i++) {
-      totalE += mag[i] * mag[i];
-    }
+    for (let i = 1; i < mag.length; i++) totalE += mag[i] * mag[i];
 
     for (let h = 1; h <= 20; h++) {
       const hf = f0 * h;
@@ -253,9 +276,7 @@ const Features = (() => {
       const center = freqToBin(hf, sr, fftSize);
       const lo = Math.max(0, center - radius);
       const hi = Math.min(mag.length - 1, center + radius);
-      for (let b = lo; b <= hi; b++) {
-        harmonicE += mag[b] * mag[b];
-      }
+      for (let b = lo; b <= hi; b++) harmonicE += mag[b] * mag[b];
     }
 
     const noiseE = totalE - harmonicE;
@@ -263,26 +284,63 @@ const Features = (() => {
     return 10 * Math.log10(harmonicE / noiseE);
   }
 
-  // ── 12. Harmonic Slope（倍音振幅の回帰傾き） ──
+  // ── 13. Harmonic Slope（倍音依存） ──
 
-  function harmonicSlope(f0, freqDB, sr, fftSize) {
-    const amps = getHarmonics(f0, freqDB, sr, fftSize);
-    if (amps.length < 3) return 0;
-
-    let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
-    let n = 0;
-    for (let i = 0; i < amps.length; i++) {
-      if (amps[i] <= 0) continue;
+  function harmonicSlope(harmonics) {
+    if (!harmonics || harmonics.length < 3) return null;
+    let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0, n = 0;
+    for (let i = 0; i < harmonics.length; i++) {
+      if (harmonics[i] <= 0) continue;
       const x = i + 1;
-      const y = 20 * Math.log10(amps[i]);
+      const y = 20 * Math.log10(harmonics[i]);
       sumX += x; sumY += y; sumXY += x * y; sumXX += x * x;
       n++;
     }
-    if (n < 2) return 0;
+    if (n < 2) return null;
     return (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
   }
 
-  // ── 13-16. Dünnwald帯域 ──
+  // ── 14. Aperiodicity（倍音帯域外エネルギー比） ──
+
+  function aperiodicity(f0, freqDB, sr, fftSize) {
+    if (f0 === null || f0 <= 0) return null;
+    const mag = dbToLinear(freqDB);
+    const binW = sr / fftSize;
+    const radius = Math.max(1, Math.ceil(f0 / binW / 4));
+    const nyquist = sr / 2;
+
+    let harmonicE = 0, totalE = 0;
+    for (let i = 1; i < mag.length; i++) totalE += mag[i] * mag[i];
+    if (totalE === 0) return null;
+
+    for (let h = 1; h <= 20; h++) {
+      const hf = f0 * h;
+      if (hf >= nyquist) break;
+      const center = freqToBin(hf, sr, fftSize);
+      const lo = Math.max(0, center - radius);
+      const hi = Math.min(mag.length - 1, center + radius);
+      for (let b = lo; b <= hi; b++) harmonicE += mag[b] * mag[b];
+    }
+
+    return (totalE - harmonicE) / totalE;
+  }
+
+  // ── 15. 個別倍音振幅 h1-h8 (dBFS) ──
+
+  function individualHarmonics(harmonics) {
+    const result = {};
+    for (let i = 0; i < 8; i++) {
+      const key = `h${i + 1}`;
+      if (harmonics && i < harmonics.length && harmonics[i] > 0) {
+        result[key] = 20 * Math.log10(harmonics[i]);
+      } else {
+        result[key] = null;
+      }
+    }
+    return result;
+  }
+
+  // ── 16-19. Dünnwald帯域 ──
 
   const DUNNWALD_BANDS = {
     richness:   { low: 190, high: 650 },
@@ -306,8 +364,7 @@ const Features = (() => {
       const hi = freqToBin(range.high, sr, fftSize);
       let e = 0, c = 0;
       for (let i = lo; i <= Math.min(hi, mag.length - 1); i++) {
-        e += mag[i] * mag[i];
-        c++;
+        e += mag[i] * mag[i]; c++;
       }
       if (totalRms > 0 && c > 0) {
         result[name] = 20 * Math.log10(Math.sqrt(e / c) / totalRms + 1e-10);
@@ -318,13 +375,21 @@ const Features = (() => {
     return result;
   }
 
-  // ── 17. RMS Energy (dB) ──
-  // → computeRMS() 上で定義済み
+  // ── 20. Low Frequency Ratio (< 100Hz) ──
 
-  // ── 18. F0 ──
-  // → detectF0() 上で定義済み
+  function lowFreqRatio(freqDB, sr, fftSize) {
+    const mag = dbToLinear(freqDB);
+    let lowE = 0, totalE = 0;
+    const cutoffBin = freqToBin(100, sr, fftSize);
+    for (let i = 1; i < mag.length; i++) {
+      const e = mag[i] * mag[i];
+      totalE += e;
+      if (i <= cutoffBin) lowE += e;
+    }
+    return totalE === 0 ? 0 : lowE / totalE;
+  }
 
-  // ── 19-20. Stability（ローリングSD） ──
+  // ── Stability（ローリングSD） ──
 
   class RollingStats {
     constructor(windowSize) {
@@ -332,6 +397,7 @@ const Features = (() => {
       this.buf = [];
     }
     push(val) {
+      if (val === null) return;
       this.buf.push(val);
       if (this.buf.length > this.win) this.buf.shift();
     }
@@ -343,80 +409,119 @@ const Features = (() => {
       return Math.sqrt(ss / this.buf.length);
     }
     mean() {
-      if (this.buf.length === 0) return 0;
-      return this.buf.reduce((s, v) => s + v, 0) / this.buf.length;
+      return this.buf.length === 0 ? 0 : this.buf.reduce((s, v) => s + v, 0) / this.buf.length;
     }
-    reset() {
-      this.buf = [];
-    }
+    reset() { this.buf = []; }
   }
 
   const f0Stats = new RollingStats(30);
   const scStats = new RollingStats(30);
 
-  // ── 21. Attack Time ──
+  // ── Onset Detection ──
 
-  let attackState = { tracking: false, startTime: 0, threshold: -40 };
-  let lastRMS = -100;
-  let lastAttackTime = 0;
-
-  function detectAttack(rmsDB, now) {
-    const silenceThreshold = -50;
-    const soundThreshold = -30;
-
-    if (lastRMS < silenceThreshold && rmsDB > silenceThreshold) {
-      attackState.tracking = true;
-      attackState.startTime = now;
+  class OnsetDetector {
+    constructor() {
+      this.onsets = [];
+      this.state = 'silent';
+      this.riseStart = 0;
+      this.peakRMS = -100;
+      this.lastOnsetTime = null;
     }
 
-    if (attackState.tracking && rmsDB > soundThreshold) {
-      lastAttackTime = now - attackState.startTime;
-      attackState.tracking = false;
+    process(rmsDB, timestamp) {
+      const SILENCE = -50;
+      const SOUND = -35;
+
+      switch (this.state) {
+        case 'silent':
+          if (rmsDB > SILENCE) {
+            this.state = 'rising';
+            this.riseStart = timestamp;
+            this.peakRMS = rmsDB;
+          }
+          break;
+        case 'rising':
+          if (rmsDB > this.peakRMS) this.peakRMS = rmsDB;
+          if (rmsDB >= SOUND) {
+            const riseTime = timestamp - this.riseStart;
+            this.onsets.push({ time: this.riseStart, riseTime: Math.round(riseTime * 10) / 10 });
+            this.lastOnsetTime = this.riseStart;
+            this.state = 'sustain';
+          }
+          if (rmsDB < SILENCE) this.state = 'silent';
+          break;
+        case 'sustain':
+          if (rmsDB < SILENCE) this.state = 'silent';
+          break;
+      }
+
+      return this.lastOnsetTime !== null ? timestamp - this.lastOnsetTime : null;
     }
 
-    lastRMS = rmsDB;
-    return lastAttackTime;
+    getOnsets() { return this.onsets; }
+    reset() {
+      this.onsets = [];
+      this.state = 'silent';
+      this.lastOnsetTime = null;
+      this.peakRMS = -100;
+    }
   }
 
-  // ── 22-23. Vibrato検出 ──
+  const onsetDetector = new OnsetDetector();
+
+  // ── Vibrato検出（閾値カットなし、自己相関ベース） ──
 
   const vibratoF0Buf = [];
   const VIBRATO_WINDOW = 60; // ~2秒分 @ 30fps
 
   function detectVibrato(f0) {
-    if (f0 <= 0) return { rate: 0, depth: 0 };
+    if (f0 === null) return { rate: null, depth: null, confidence: null };
 
     vibratoF0Buf.push(f0);
     if (vibratoF0Buf.length > VIBRATO_WINDOW) vibratoF0Buf.shift();
-    if (vibratoF0Buf.length < 15) return { rate: 0, depth: 0 };
 
-    // F0の平均を引いてAC成分だけにする
-    const mean = vibratoF0Buf.reduce((s, v) => s + v, 0) / vibratoF0Buf.length;
-    const centered = vibratoF0Buf.map(v => v - mean);
+    // 有効なf0のみ抽出
+    const valid = vibratoF0Buf.filter(v => v !== null);
+    if (valid.length < 10) return { rate: null, depth: null, confidence: null };
 
-    // ゼロクロッシングでレート推定
-    let crossings = 0;
-    for (let i = 1; i < centered.length; i++) {
-      if ((centered[i - 1] < 0 && centered[i] >= 0) ||
-          (centered[i - 1] >= 0 && centered[i] < 0)) {
-        crossings++;
+    const mean = valid.reduce((s, v) => s + v, 0) / valid.length;
+    const centered = valid.map(v => v - mean);
+
+    // エネルギー
+    const energy = centered.reduce((s, v) => s + v * v, 0);
+    if (energy === 0) return { rate: 0, depth: 0, confidence: 0 };
+
+    // 自己相関でレート推定
+    const fps = 30;
+    const minLag = Math.max(1, Math.floor(fps / 10)); // 10Hz上限
+    const maxLag = Math.min(centered.length - 1, Math.floor(fps / 2)); // 2Hz下限
+
+    let bestLag = 0, bestCorr = -1;
+    for (let lag = minLag; lag <= maxLag; lag++) {
+      let corr = 0;
+      for (let i = 0; i < centered.length - lag; i++) {
+        corr += centered[i] * centered[i + lag];
+      }
+      corr /= energy;
+      if (corr > bestCorr) {
+        bestCorr = corr;
+        bestLag = lag;
       }
     }
-    const durationSec = vibratoF0Buf.length / 30; // 30fps想定
-    const rate = crossings / 2 / durationSec;
 
-    // 深さ: cents単位
+    const rate = bestLag > 0 ? fps / bestLag : 0;
+
+    // 深さ: peak-to-peak in cents
     let maxF0 = -Infinity, minF0 = Infinity;
-    for (const v of vibratoF0Buf) {
+    for (const v of valid) {
       if (v > maxF0) maxF0 = v;
       if (v < minF0) minF0 = v;
     }
-    const depth = mean > 0 ? 1200 * Math.log2(maxF0 / minF0) : 0;
+    const depth = mean > 0 && maxF0 > minF0 ? 1200 * Math.log2(maxF0 / minF0) : 0;
 
-    // ビブラート範囲内（4-8Hz）でなければ0とみなす
-    if (rate < 3.5 || rate > 9) return { rate: 0, depth: 0 };
+    const confidence = Math.max(0, Math.min(1, bestCorr));
 
-    return { rate: Math.round(rate * 10) / 10, depth: Math.round(depth * 10) / 10 };
+    return { rate, depth, confidence };
   }
 
   // ── 全指標一括計算 ──
@@ -427,73 +532,100 @@ const Features = (() => {
     const rmsDB = computeRMS(timeDomain);
     if (rmsDB < -55) return null; // 無音
 
-    const f0 = detectF0(timeDomain, sr);
-    const sc = spectralCentroid(frequency, sr, fftSize);
+    // F0検出（信頼度付き）
+    const f0Result = detectF0(timeDomain, sr);
+    const f0 = f0Result.freq; // null or Hz
+    const f0Conf = f0Result.confidence;
 
-    // Stability用バッファに追加
-    if (f0 > 0) f0Stats.push(f0);
+    // 倍音を1回だけ計算
+    const harmonics = getHarmonics(f0, frequency, sr, fftSize, 20);
+
+    // スペクトル形状
+    const sc = spectralCentroid(frequency, sr, fftSize);
     scStats.push(sc);
+    if (f0 !== null) f0Stats.push(f0);
 
     const ss = spectralSpread(frequency, sr, fftSize, sc);
     const slope = spectralSlope(frequency, sr, fftSize);
     const sfm = spectralFlatness(frequency);
-    const si = spectralIrregularity(f0, frequency, sr, fftSize);
+    const si = spectralIrregularity(harmonics);
     const flux = spectralFlux(frequency);
+    const ro85 = spectralRolloff(frequency, sr, fftSize, 0.85);
+    const ro95 = spectralRolloff(frequency, sr, fftSize, 0.95);
 
-    const tri = tristimulus(f0, frequency, sr, fftSize);
-    const oer = oddEvenRatio(f0, frequency, sr, fftSize);
+    // 倍音構造
+    const tri = tristimulus(harmonics);
+    const oer = oddEvenRatio(harmonics);
     const hnr = harmonicToNoise(f0, frequency, sr, fftSize);
-    const hSlope = harmonicSlope(f0, frequency, sr, fftSize);
+    const hSlope = harmonicSlope(harmonics);
+    const aper = aperiodicity(f0, frequency, sr, fftSize);
+    const hIndiv = individualHarmonics(harmonics);
 
+    // 周波数帯域
     const dw = dunnwaldBands(frequency, sr, fftSize);
+    const lfr = lowFreqRatio(frequency, sr, fftSize);
 
-    const attack = detectAttack(rmsDB, now);
+    // 時間・発音
+    const timeSinceOnset = onsetDetector.process(rmsDB, now);
     const vib = detectVibrato(f0);
 
-    // F0 stability in cents
+    // F0 stability (cents SD)
     const f0SD = f0Stats.sd();
     const f0Mean = f0Stats.mean();
-    const f0StabilityCents = f0Mean > 0 ? 1200 * Math.log2((f0Mean + f0SD) / f0Mean) : 0;
+    const f0StabCents = (f0Mean > 0 && f0 !== null)
+      ? 1200 * Math.log2((f0Mean + f0SD) / f0Mean)
+      : null;
 
     return {
-      spectralCentroid: Math.round(sc * 10) / 10,
-      spectralSpread: Math.round(ss * 10) / 10,
-      spectralSlope: Math.round(slope * 1000000) / 1000000,
-      sfm: Math.round(sfm * 1000) / 1000,
-      spectralIrregularity: Math.round(si * 1000) / 1000,
-      spectralFlux: Math.round(flux * 10000) / 10000,
+      spectralCentroid: sc,
+      spectralSpread: ss,
+      spectralSlope: slope,
+      sfm,
+      spectralIrregularity: si,
+      spectralFlux: flux,
+      spectralRolloff85: ro85,
+      spectralRolloff95: ro95,
 
-      t1: Math.round(tri.t1 * 1000) / 1000,
-      t2: Math.round(tri.t2 * 1000) / 1000,
-      t3: Math.round(tri.t3 * 1000) / 1000,
-      oddEvenRatio: Math.round(oer * 100) / 100,
-      hnr: Math.round(hnr * 10) / 10,
-      harmonicSlope: Math.round(hSlope * 100) / 100,
+      t1: tri.t1,
+      t2: tri.t2,
+      t3: tri.t3,
+      oddEvenRatio: oer,
+      hnr,
+      harmonicSlope: hSlope,
+      aperiodicity: aper,
 
-      richness: Math.round(dw.richness * 10) / 10,
-      nasality: Math.round(dw.nasality * 10) / 10,
-      brilliance: Math.round(dw.brilliance * 10) / 10,
-      harshness: Math.round(dw.harshness * 10) / 10,
+      h1: hIndiv.h1, h2: hIndiv.h2, h3: hIndiv.h3, h4: hIndiv.h4,
+      h5: hIndiv.h5, h6: hIndiv.h6, h7: hIndiv.h7, h8: hIndiv.h8,
 
-      rms: Math.round(rmsDB * 10) / 10,
-      f0: f0 > 0 ? Math.round(f0 * 10) / 10 : 0,
-      f0Stability: Math.round(f0StabilityCents * 10) / 10,
-      scStability: Math.round(scStats.sd() * 10) / 10,
-      attackTime: Math.round(attack * 10) / 10,
+      richness: dw.richness,
+      nasality: dw.nasality,
+      brilliance: dw.brilliance,
+      harshness: dw.harshness,
+      lowFreqRatio: lfr,
+
+      rms: rmsDB,
+      f0,
+      f0Confidence: f0Conf,
+      f0Stability: f0StabCents,
+      scStability: scStats.sd(),
+      timeSinceOnset,
       vibratoRate: vib.rate,
       vibratoDepth: vib.depth,
+      vibratoConfidence: vib.confidence,
     };
   }
 
+  function getOnsets() {
+    return onsetDetector.getOnsets();
+  }
+
   function resetState() {
-    prevMag = null;
+    prevFreqDB = null;
     f0Stats.reset();
     scStats.reset();
     vibratoF0Buf.length = 0;
-    lastRMS = -100;
-    lastAttackTime = 0;
-    attackState = { tracking: false, startTime: 0, threshold: -40 };
+    onsetDetector.reset();
   }
 
-  return { computeAll, resetState, computeRMS, detectF0 };
+  return { computeAll, resetState, getOnsets, computeRMS, detectF0 };
 })();

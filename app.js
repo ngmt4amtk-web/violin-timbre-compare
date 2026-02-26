@@ -1,13 +1,16 @@
-// app.js — メインアプリケーション制御
+// app.js — メインアプリケーション制御 v2
 
 (() => {
   'use strict';
 
+  const FORMAT_VERSION = '2.0';
+
   // ── 状態 ──
   let currentMode = 'realtime';
   let isRunning = false;
-  let reference = null; // { metrics: {key: avg}, f0: number }
+  let reference = null;
   let animFrameId = null;
+  let audioParams = null; // { sampleRate, fftSize }
 
   // データモード
   let dataRecording = false;
@@ -18,9 +21,8 @@
   let refRecording = false;
   let refFrames = [];
   let refStartTime = 0;
-  const REF_DURATION = 3000; // 3秒
+  const REF_DURATION = 3000;
 
-  // ── DOM ──
   const $ = id => document.getElementById(id);
 
   // ── 初期化 ──
@@ -74,19 +76,12 @@
   }
 
   function bindEvents() {
-    // 起動
     $('btn-start').addEventListener('click', startAudio);
-
-    // モード切替
     for (const tab of document.querySelectorAll('.tab')) {
       tab.addEventListener('click', () => switchMode(tab.dataset.mode));
     }
-
-    // 基準録音
     $('btn-record-ref').addEventListener('click', startRefRecording);
     $('btn-clear-ref').addEventListener('click', clearReference);
-
-    // データモード
     $('btn-data-record').addEventListener('click', startDataRecording);
     $('btn-data-stop').addEventListener('click', stopDataRecording);
     $('btn-export-simple').addEventListener('click', () => exportData(false));
@@ -96,7 +91,7 @@
 
   async function startAudio() {
     try {
-      await AudioEngine.init();
+      audioParams = await AudioEngine.init();
       isRunning = true;
       $('screen-start').classList.remove('active');
       $('screen-realtime').classList.add('active');
@@ -134,7 +129,7 @@
 
     if (currentMode === 'data' && dataRecording && metrics) {
       dataFrames.push({ timestamp, metrics: { ...metrics } });
-      updateDataTimer(timestamp);
+      updateDataTimer();
     }
   }
 
@@ -142,7 +137,6 @@
 
   function updateRealtimeUI(metrics) {
     if (!metrics) {
-      // 無音時は値を薄く
       for (const m of METRICS) {
         const valEl = $(`val-${m.key}`);
         if (valEl) valEl.style.opacity = '0.3';
@@ -159,8 +153,17 @@
       const diffEl = $(`diff-${m.key}`);
       const rowEl = $(`row-${m.key}`);
 
-      // 値表示
-      valEl.textContent = m.format(val);
+      // null値の処理
+      if (val === null) {
+        valEl.textContent = '—';
+        valEl.style.opacity = '0.3';
+        barEl.style.width = '0%';
+        diffEl.textContent = '';
+        rowEl.className = 'metric-row';
+        continue;
+      }
+
+      valEl.textContent = m.display(val);
       valEl.style.opacity = '1';
 
       // バー
@@ -171,29 +174,26 @@
       // 基準との比較
       if (reference) {
         const refVal = reference.metrics[m.key];
-        if (refVal !== undefined && refVal !== null) {
-          // 基準マーカー
+        if (refVal !== null && refVal !== undefined) {
           const refPct = Math.max(0, Math.min(100, ((refVal - lo) / (hi - lo)) * 100));
           refEl.style.display = '';
           refEl.style.left = refPct + '%';
+          refValEl.textContent = `基準: ${m.display(refVal)}`;
 
-          refValEl.textContent = `基準: ${m.format(refVal)}`;
-
-          // 差分
           const diff = val - refVal;
           const absDiff = Math.abs(diff);
-          const refAbs = Math.abs(refVal) || 1;
-          const pctDiff = (absDiff / refAbs) * 100;
+          const rangeDiff = hi - lo;
 
-          if (absDiff < (hi - lo) * 0.02) {
+          if (rangeDiff > 0 && absDiff < rangeDiff * 0.02) {
             diffEl.textContent = '≈';
             diffEl.className = 'metric-diff match';
             rowEl.className = 'metric-row highlight-green';
           } else {
             const arrow = diff > 0 ? '△' : '▽';
-            diffEl.textContent = `${arrow}${m.format(absDiff)}`;
+            diffEl.textContent = `${arrow}${m.display(absDiff)}`;
             diffEl.className = 'metric-diff ' + (diff > 0 ? 'up' : 'down');
 
+            const pctDiff = rangeDiff > 0 ? (absDiff / rangeDiff) * 100 : 0;
             if (pctDiff > 30) {
               rowEl.className = 'metric-row highlight-red';
             } else if (pctDiff > 15) {
@@ -202,6 +202,11 @@
               rowEl.className = 'metric-row';
             }
           }
+        } else {
+          refEl.style.display = 'none';
+          refValEl.textContent = '';
+          diffEl.textContent = '';
+          rowEl.className = 'metric-row';
         }
       } else {
         refEl.style.display = 'none';
@@ -211,10 +216,7 @@
       }
     }
 
-    // TOP3
-    if (reference) {
-      updateTop3(metrics);
-    }
+    if (reference) updateTop3(metrics);
   }
 
   function updateTop3(metrics) {
@@ -222,7 +224,7 @@
     for (const m of METRICS) {
       const cur = metrics[m.key];
       const ref = reference.metrics[m.key];
-      if (ref === undefined || ref === null) continue;
+      if (cur === null || ref === null || ref === undefined) continue;
       const [lo, hi] = m.range;
       const rangeDiff = hi - lo;
       if (rangeDiff === 0) continue;
@@ -301,26 +303,21 @@
       return;
     }
 
-    // 全フレームの平均を計算
+    // 全フレームの平均（null除外）
     const avg = {};
     for (const m of METRICS) {
-      const vals = refFrames.map(f => f[m.key]).filter(v => v !== undefined && v !== null && v !== 0);
-      if (vals.length > 0) {
-        avg[m.key] = vals.reduce((s, v) => s + v, 0) / vals.length;
-      } else {
-        avg[m.key] = 0;
-      }
+      const vals = refFrames.map(f => f[m.key]).filter(v => v !== null && v !== undefined);
+      avg[m.key] = vals.length > 0 ? vals.reduce((s, v) => s + v, 0) / vals.length : null;
     }
 
-    // F0の最頻値で音名を推定
-    const f0Vals = refFrames.map(f => f.f0).filter(v => v > 0);
-    const avgF0 = f0Vals.length > 0 ? f0Vals.reduce((s, v) => s + v, 0) / f0Vals.length : 0;
+    const f0Vals = refFrames.map(f => f.f0).filter(v => v !== null && v > 0);
+    const avgF0 = f0Vals.length > 0 ? f0Vals.reduce((s, v) => s + v, 0) / f0Vals.length : null;
 
     reference = { metrics: avg, f0: avgF0 };
 
-    const noteName = avgF0 > 0 ? freqToNote(avgF0) : '—';
+    const noteName = avgF0 ? freqToNote(avgF0) : '—';
     $('ref-label').textContent = `基準: ${noteName}`;
-    $('ref-pitch').textContent = avgF0 > 0 ? `${avgF0.toFixed(1)} Hz / ${refFrames.length} frames` : '';
+    $('ref-pitch').textContent = avgF0 ? `${avgF0.toFixed(1)} Hz / ${refFrames.length} frames` : '';
     $('btn-clear-ref').style.display = '';
     $('top3-panel').style.display = '';
 
@@ -359,7 +356,7 @@
     $('data-summary').style.display = 'none';
   }
 
-  function updateDataTimer(timestamp) {
+  function updateDataTimer() {
     const elapsed = (performance.now() - dataStartTime) / 1000;
     $('data-elapsed').textContent = elapsed.toFixed(1);
     $('data-frames').textContent = dataFrames.length;
@@ -386,7 +383,6 @@
     $('export-fps').textContent = `${fps.toFixed(0)} fps`;
     $('data-export').style.display = '';
 
-    // サマリー表示
     showDataSummary();
   }
 
@@ -396,23 +392,24 @@
     container.innerHTML = '';
 
     for (const m of METRICS) {
-      const vals = dataFrames.map(f => f.metrics[m.key]).filter(v => v !== undefined && v !== null);
+      const vals = dataFrames.map(f => f.metrics[m.key]).filter(v => v !== null && v !== undefined);
       if (vals.length === 0) continue;
 
       const avg = vals.reduce((s, v) => s + v, 0) / vals.length;
-      const variance = vals.reduce((s, v) => s + (v - avg) * (v - avg), 0) / vals.length;
-      const sd = Math.sqrt(variance);
+      const sd = Math.sqrt(vals.reduce((s, v) => s + (v - avg) * (v - avg), 0) / vals.length);
 
       const row = document.createElement('div');
       row.className = 'summary-row';
       row.innerHTML = `
         <span class="s-label">${m.label}</span>
-        <span class="s-avg">avg=${m.format(avg)}</span>
-        <span class="s-sd">sd=${m.format(sd)}</span>
+        <span class="s-avg">avg=${m.display(avg)}</span>
+        <span class="s-sd">sd=${m.display(sd)} (n=${vals.length})</span>
       `;
       container.appendChild(row);
     }
   }
+
+  // ── エクスポート ──
 
   function exportData(detailed) {
     const firstTs = dataFrames[0].timestamp;
@@ -421,46 +418,85 @@
     const fps = dataFrames.length / duration;
     const now = new Date();
     const dateStr = now.toISOString().slice(0, 19);
-    const fileDateStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}`;
+    const fileDateStr = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, '0'),
+      String(now.getDate()).padStart(2, '0'),
+    ].join('-') + '_' + [
+      String(now.getHours()).padStart(2, '0'),
+      String(now.getMinutes()).padStart(2, '0'),
+    ].join('');
 
     let txt = '';
 
-    // [header]
+    // ── [header] ──
     txt += '[header]\n';
     txt += `app: 音色比較\n`;
-    txt += `version: 1.0\n`;
+    txt += `format_version: ${FORMAT_VERSION}\n`;
     txt += `date: ${dateStr}\n`;
-    txt += `duration_sec: ${duration.toFixed(1)}\n`;
-    txt += `fps: ${fps.toFixed(0)}\n`;
+    txt += `duration_sec: ${duration.toFixed(3)}\n`;
     txt += `total_frames: ${dataFrames.length}\n`;
+    txt += `avg_fps: ${fps.toFixed(1)}\n`;
+    txt += `frame_timing: variable (requestAnimationFrame)\n`;
 
-    // 検出された音高
-    const f0s = dataFrames.map(f => f.metrics.f0).filter(v => v > 0);
-    if (f0s.length > 0) {
-      const avgF0 = f0s.reduce((s, v) => s + v, 0) / f0s.length;
-      txt += `detected_pitch: ${freqToNote(avgF0)} (${avgF0.toFixed(1)}Hz)\n`;
+    // 分析パラメータ
+    if (audioParams) {
+      txt += `sample_rate: ${audioParams.sampleRate}\n`;
+      txt += `fft_size: ${audioParams.fftSize}\n`;
+    }
+    txt += `window_function: Blackman (AnalyserNode default)\n`;
+    txt += `f0_algorithm: YIN (threshold=0.15, parabolic interpolation)\n`;
+    txt += `rms_unit: dBFS (full-scale reference)\n`;
+    txt += `harmonic_amplitudes_unit: dBFS\n`;
+    txt += `null_convention: empty cell = not computable (f0 undetected or insufficient data)\n`;
+
+    // フレーム間隔の統計
+    if (dataFrames.length > 1) {
+      const intervals = [];
+      for (let i = 1; i < dataFrames.length; i++) {
+        intervals.push(dataFrames[i].timestamp - dataFrames[i - 1].timestamp);
+      }
+      const avgInterval = intervals.reduce((s, v) => s + v, 0) / intervals.length;
+      const sdInterval = Math.sqrt(intervals.reduce((s, v) => s + (v - avgInterval) * (v - avgInterval), 0) / intervals.length);
+      txt += `frame_interval_ms: avg=${avgInterval.toFixed(2)} sd=${sdInterval.toFixed(2)} min=${Math.min(...intervals).toFixed(2)} max=${Math.max(...intervals).toFixed(2)}\n`;
     }
     txt += '\n';
 
-    // [metrics_summary]
+    // ── [metrics_summary] ──
     txt += '[metrics_summary]\n';
+    txt += '# stats computed excluding null values; n = count of valid frames\n';
     for (const m of METRICS) {
-      const vals = dataFrames.map(f => f.metrics[m.key]).filter(v => v !== undefined && v !== null);
+      const vals = dataFrames.map(f => f.metrics[m.key]).filter(v => v !== null && v !== undefined);
       if (vals.length === 0) {
-        txt += `${m.key}: n/a\n`;
+        txt += `${m.key}: n=0\n`;
         continue;
       }
       const avg = vals.reduce((s, v) => s + v, 0) / vals.length;
       const sd = Math.sqrt(vals.reduce((s, v) => s + (v - avg) * (v - avg), 0) / vals.length);
       const min = Math.min(...vals);
       const max = Math.max(...vals);
-      txt += `${m.key}: avg=${m.format(avg)} sd=${m.format(sd)} min=${m.format(min)} max=${m.format(max)}\n`;
+      txt += `${m.key}: avg=${m.csv(avg)} sd=${m.csv(sd)} min=${m.csv(min)} max=${m.csv(max)} n=${vals.length}\n`;
     }
     txt += '\n';
 
-    // [frame_data]
+    // ── [onsets] ──
+    const onsets = Features.getOnsets();
+    if (onsets.length > 0) {
+      txt += '[onsets]\n';
+      txt += '# onset events detected during recording\n';
+      txt += '# time: ms from recording start, rise_time: ms from silence to stable sound\n';
+      txt += 'index,time_ms,rise_time_ms\n';
+      onsets.forEach((o, i) => {
+        const relTime = o.time - firstTs;
+        txt += `${i},${relTime.toFixed(1)},${o.riseTime.toFixed(1)}\n`;
+      });
+      txt += '\n';
+    }
+
+    // ── [frame_data] ──
     if (detailed) {
       txt += '[frame_data]\n';
+      txt += '# one row per analysis frame; empty = null (metric not computable)\n';
       const keys = METRICS.map(m => m.key);
       txt += 'frame,timestamp,' + keys.join(',') + '\n';
 
@@ -468,15 +504,15 @@
         const f = dataFrames[i];
         const ts = ((f.timestamp - firstTs) / 1000).toFixed(3);
         const vals = keys.map(k => {
-          const m = METRICS.find(mm => mm.key === k);
           const v = f.metrics[k];
-          return v !== undefined && v !== null ? m.format(v) : '';
+          if (v === null || v === undefined) return '';
+          const m = METRICS.find(mm => mm.key === k);
+          return m.csv(v);
         });
         txt += `${i},${ts},${vals.join(',')}\n`;
       }
     }
 
-    // ダウンロード
     const suffix = detailed ? '_detail' : '';
     const filename = `timbre_${fileDateStr}${suffix}.txt`;
     downloadTxt(txt, filename);
@@ -509,14 +545,13 @@
   const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
   function freqToNote(freq) {
-    if (freq <= 0) return '—';
+    if (!freq || freq <= 0) return '—';
     const midi = 69 + 12 * Math.log2(freq / 440);
     const note = Math.round(midi);
-    const name = NOTE_NAMES[note % 12];
+    const name = NOTE_NAMES[((note % 12) + 12) % 12];
     const octave = Math.floor(note / 12) - 1;
     return `${name}${octave}`;
   }
 
-  // ── 起動 ──
   init();
 })();
