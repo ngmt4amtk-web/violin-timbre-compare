@@ -296,30 +296,6 @@ const METRICS = [
     range: [0, 3000],
     tip: { up: '', down: '' },
   },
-  {
-    key: 'vibratoRate', label: 'ビブラート速度', unit: 'Hz',
-    category: 'temporal', factor: '左手',
-    display: v => v === null ? '—' : v.toFixed(2),
-    csv: csvFormat,
-    range: [0, 8], nullWhenNoF0: true,
-    tip: { up: 'ビブラートを遅く', down: 'ビブラートを速く' },
-  },
-  {
-    key: 'vibratoDepth', label: 'ビブラート深さ', unit: 'cents',
-    category: 'temporal', factor: '左手',
-    display: v => v === null ? '—' : v.toFixed(1),
-    csv: csvFormat,
-    range: [0, 60], nullWhenNoF0: true,
-    tip: { up: 'ビブラートを浅く', down: 'ビブラートを深く' },
-  },
-  {
-    key: 'vibratoConfidence', label: 'ビブラート信頼度', unit: '',
-    category: 'temporal', factor: 'f0周期性',
-    display: v => v === null ? '—' : v.toFixed(3),
-    csv: csvFormat,
-    range: [0, 1], nullWhenNoF0: true,
-    tip: { up: '', down: '' },
-  },
 ];
 
 const CATEGORY_LABELS = {

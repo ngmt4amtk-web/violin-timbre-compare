@@ -489,65 +489,6 @@ const Features = (() => {
 
   // ── Vibrato検出（閾値カットなし、自己相関ベース） ──
 
-  const vibratoF0Buf = [];
-
-  function getVibratoWindow() {
-    return Math.max(20, Math.round(effectiveFPS * 2)); // 2秒分
-  }
-
-  function detectVibrato(f0) {
-    if (f0 === null) return { rate: null, depth: null, confidence: null };
-
-    const vibratoWindow = getVibratoWindow();
-    vibratoF0Buf.push(f0);
-    while (vibratoF0Buf.length > vibratoWindow) vibratoF0Buf.shift();
-
-    // 有効なf0のみ抽出
-    const valid = vibratoF0Buf.filter(v => v !== null);
-    if (valid.length < Math.max(10, Math.round(effectiveFPS * 0.3))) {
-      return { rate: null, depth: null, confidence: null };
-    }
-
-    const mean = valid.reduce((s, v) => s + v, 0) / valid.length;
-    const centered = valid.map(v => v - mean);
-
-    // エネルギー
-    const energy = centered.reduce((s, v) => s + v * v, 0);
-    if (energy === 0) return { rate: 0, depth: 0, confidence: 0 };
-
-    // 自己相関でレート推定
-    const fps = effectiveFPS;
-    const minLag = Math.max(1, Math.floor(fps / 15)); // 15Hz上限
-    const maxLag = Math.min(centered.length - 1, Math.floor(fps / 2)); // 2Hz下限
-
-    let bestLag = 0, bestCorr = -1;
-    for (let lag = minLag; lag <= maxLag; lag++) {
-      let corr = 0;
-      for (let i = 0; i < centered.length - lag; i++) {
-        corr += centered[i] * centered[i + lag];
-      }
-      corr /= energy;
-      if (corr > bestCorr) {
-        bestCorr = corr;
-        bestLag = lag;
-      }
-    }
-
-    const rate = bestLag > 0 ? fps / bestLag : 0;
-
-    // 深さ: peak-to-peak in cents
-    let maxF0 = -Infinity, minF0 = Infinity;
-    for (const v of valid) {
-      if (v > maxF0) maxF0 = v;
-      if (v < minF0) minF0 = v;
-    }
-    const depth = mean > 0 && maxF0 > minF0 ? 1200 * Math.log2(maxF0 / minF0) : 0;
-
-    const confidence = Math.max(0, Math.min(1, bestCorr));
-
-    return { rate, depth, confidence };
-  }
-
   // ── 全指標一括計算 ──
 
   function computeAll(buffers, now) {
@@ -591,7 +532,6 @@ const Features = (() => {
 
     // 時間・発音
     const timeSinceOnset = onsetDetector.process(rmsDB, now);
-    const vib = detectVibrato(f0);
 
     // F0 stability (cents SD)
     const f0SD = f0Stats.sd();
@@ -633,9 +573,6 @@ const Features = (() => {
       f0Stability: f0StabCents,
       scStability: scStats.sd(),
       timeSinceOnset,
-      vibratoRate: vib.rate,
-      vibratoDepth: vib.depth,
-      vibratoConfidence: vib.confidence,
     };
   }
 
@@ -647,7 +584,6 @@ const Features = (() => {
     prevFreqDB = null;
     f0Stats.reset();
     scStats.reset();
-    vibratoF0Buf.length = 0;
     onsetDetector.reset();
   }
 

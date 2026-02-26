@@ -511,11 +511,6 @@
     const f0Frames = dataFrames.filter(f => f.metrics.f0 !== null).length;
     txt += `f0_detection_ratio: ${(f0Frames / totalFrames).toFixed(3)}\n`;
 
-    // Vibrato saturation (near 15Hz upper limit)
-    const vibFrames = dataFrames.filter(f => f.metrics.vibratoRate !== null);
-    const satFrames = vibFrames.filter(f => f.metrics.vibratoRate > 14);
-    txt += `vibrato_saturation_ratio: ${vibFrames.length > 0 ? (satFrames.length / vibFrames.length).toFixed(3) : '0'}\n`;
-
     // Dropped frames
     const expectedFrames = Math.round(duration * audioParams.sampleRate / audioParams.hopSize);
     txt += `expected_frames: ${expectedFrames}\n`;
