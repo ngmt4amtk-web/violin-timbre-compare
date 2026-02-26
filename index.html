@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>音色比較</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎻</text></svg>">
+</head>
+<body>
+  <div id="app">
+    <!-- ヘッダー -->
+    <header id="header">
+      <h1>音色比較</h1>
+      <div id="mode-tabs">
+        <button class="tab active" data-mode="realtime">リアルタイム</button>
+        <button class="tab" data-mode="data">データ</button>
+      </div>
+    </header>
+
+    <!-- 起動画面 -->
+    <div id="screen-start" class="screen active">
+      <div class="start-content">
+        <div class="start-icon">🎻</div>
+        <h2>音色比較</h2>
+        <p>同じ楽器で弾き方の違いを<br>23の指標で可視化します</p>
+        <button id="btn-start" class="btn-primary">マイクを起動</button>
+      </div>
+    </div>
+
+    <!-- リアルタイムモード -->
+    <div id="screen-realtime" class="screen">
+      <!-- 基準パネル -->
+      <div id="reference-panel">
+        <div id="ref-status">
+          <span id="ref-label">基準: 未録音</span>
+          <span id="ref-pitch"></span>
+        </div>
+        <div id="ref-buttons">
+          <button id="btn-record-ref" class="btn-ref">基準を録る</button>
+          <button id="btn-clear-ref" class="btn-ref-small" style="display:none">クリア</button>
+        </div>
+        <div id="ref-progress" style="display:none">
+          <div id="ref-progress-bar"></div>
+          <span id="ref-countdown">3</span>
+        </div>
+      </div>
+
+      <!-- 指標一覧 -->
+      <div id="metrics-container"></div>
+
+      <!-- TOP3パネル -->
+      <div id="top3-panel" style="display:none">
+        <div class="top3-header">差が大きい順 TOP 3</div>
+        <div id="top3-list"></div>
+      </div>
+    </div>
+
+    <!-- データモード -->
+    <div id="screen-data" class="screen">
+      <div id="data-controls">
+        <div id="data-status">待機中</div>
+        <button id="btn-data-record" class="btn-primary">録音開始</button>
+        <button id="btn-data-stop" class="btn-stop" style="display:none">停止</button>
+        <div id="data-timer" style="display:none">
+          <span id="data-elapsed">0.0</span>s
+          <span id="data-frames">0</span> frames
+        </div>
+      </div>
+      <div id="data-export" style="display:none">
+        <div class="export-stats">
+          <span id="export-duration"></span>
+          <span id="export-frames"></span>
+          <span id="export-fps"></span>
+        </div>
+        <button id="btn-export-simple" class="btn-export">簡易エクスポート</button>
+        <button id="btn-export-detail" class="btn-export">詳細エクスポート</button>
+        <button id="btn-data-new" class="btn-ref-small">新規録音</button>
+      </div>
+      <!-- データモード中の指標サマリー -->
+      <div id="data-summary" style="display:none"></div>
+    </div>
+  </div>
+
+  <script src="audio-engine.js"></script>
+  <script src="features.js"></script>
+  <script src="metrics-config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

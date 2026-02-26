@@ -1,0 +1,471 @@
+/* style.css — 音色比較 */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #0a0a0f;
+  --surface: #14141f;
+  --surface2: #1c1c2e;
+  --border: #2a2a40;
+  --text: #e8e8f0;
+  --text2: #8888aa;
+  --accent: #6c8cff;
+  --green: #44cc88;
+  --orange: #ff9944;
+  --red: #ff4466;
+  --bar-bg: #222240;
+  --bar-fill: #6c8cff;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100dvh;
+  overflow-x: hidden;
+  -webkit-text-size-adjust: 100%;
+}
+
+#app {
+  max-width: 480px;
+  margin: 0 auto;
+  padding-bottom: env(safe-area-inset-bottom, 16px);
+}
+
+/* ── ヘッダー ── */
+
+#header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+#header h1 {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+#mode-tabs {
+  display: flex;
+  gap: 2px;
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 2px;
+}
+
+.tab {
+  background: none;
+  border: none;
+  color: var(--text2);
+  font-size: 13px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.tab.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* ── 画面切替 ── */
+
+.screen { display: none; }
+.screen.active { display: block; }
+
+/* ── 起動画面 ── */
+
+#screen-start {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 80dvh;
+}
+
+.start-content {
+  text-align: center;
+}
+
+.start-icon {
+  font-size: 64px;
+  margin-bottom: 16px;
+}
+
+.start-content h2 {
+  font-size: 24px;
+  margin-bottom: 8px;
+}
+
+.start-content p {
+  color: var(--text2);
+  font-size: 14px;
+  margin-bottom: 32px;
+  line-height: 1.6;
+}
+
+/* ── ボタン ── */
+
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  padding: 14px 40px;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.btn-primary:active { opacity: 0.7; }
+
+.btn-ref {
+  background: var(--surface2);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  padding: 8px 20px;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-ref.recording {
+  background: var(--red);
+  color: #fff;
+  border-color: var(--red);
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.btn-ref-small {
+  background: none;
+  color: var(--text2);
+  border: 1px solid var(--border);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.btn-stop {
+  background: var(--red);
+  color: #fff;
+  border: none;
+  padding: 14px 40px;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  animation: pulse 1s infinite;
+}
+
+.btn-export {
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 12px 20px;
+  border-radius: 10px;
+  font-size: 14px;
+  cursor: pointer;
+  width: 100%;
+  margin-bottom: 8px;
+  transition: background 0.2s;
+}
+
+.btn-export:active { background: var(--border); }
+
+/* ── 基準パネル ── */
+
+#reference-panel {
+  padding: 12px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+#ref-status {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#ref-label {
+  font-size: 13px;
+  color: var(--text2);
+}
+
+#ref-pitch {
+  font-size: 12px;
+  color: var(--accent);
+}
+
+#ref-progress {
+  width: 100%;
+  height: 4px;
+  background: var(--bar-bg);
+  border-radius: 2px;
+  position: relative;
+  margin-top: 4px;
+}
+
+#ref-progress-bar {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  width: 0%;
+  transition: width 0.1s linear;
+}
+
+#ref-countdown {
+  position: absolute;
+  right: 0;
+  top: -18px;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+/* ── 指標コンテナ ── */
+
+#metrics-container {
+  padding: 8px 0;
+}
+
+.category-section {
+  margin-bottom: 4px;
+}
+
+.category-header {
+  font-size: 11px;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  padding: 8px 16px 4px;
+  background: var(--bg);
+  position: sticky;
+  top: 41px;
+  z-index: 10;
+}
+
+/* ── 指標行 ── */
+
+.metric-row {
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.3s;
+}
+
+.metric-row.highlight-red { background: rgba(255, 68, 102, 0.08); }
+.metric-row.highlight-orange { background: rgba(255, 153, 68, 0.08); }
+.metric-row.highlight-green { background: rgba(68, 204, 136, 0.05); }
+
+.metric-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+
+.metric-label {
+  font-size: 13px;
+  font-weight: 500;
+  min-width: 90px;
+  flex-shrink: 0;
+}
+
+.metric-bar-wrap {
+  flex: 1;
+  height: 6px;
+  background: var(--bar-bg);
+  border-radius: 3px;
+  position: relative;
+  overflow: hidden;
+}
+
+.metric-bar {
+  height: 100%;
+  background: var(--bar-fill);
+  border-radius: 3px;
+  transition: width 0.15s ease-out;
+  width: 0%;
+}
+
+.metric-bar.ref-marker {
+  position: absolute;
+  top: 0;
+  width: 2px;
+  height: 100%;
+  background: var(--green);
+  border-radius: 0;
+  transition: left 0.15s ease-out;
+}
+
+.metric-value {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  min-width: 60px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.metric-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.metric-ref {
+  font-size: 11px;
+  color: var(--text2);
+}
+
+.metric-diff {
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.metric-diff.up { color: var(--orange); }
+.metric-diff.down { color: var(--accent); }
+.metric-diff.match { color: var(--green); }
+
+.metric-factor {
+  font-size: 10px;
+  color: var(--text2);
+  background: var(--surface2);
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+/* ── TOP3パネル ── */
+
+#top3-panel {
+  position: sticky;
+  bottom: 0;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding: 10px 16px;
+  z-index: 50;
+}
+
+.top3-header {
+  font-size: 11px;
+  color: var(--text2);
+  margin-bottom: 6px;
+  letter-spacing: 0.5px;
+}
+
+.top3-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  padding: 3px 0;
+}
+
+.top3-rank {
+  font-weight: 700;
+  color: var(--orange);
+  min-width: 16px;
+}
+
+.top3-name {
+  min-width: 80px;
+}
+
+.top3-diff {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--orange);
+  min-width: 60px;
+}
+
+.top3-tip {
+  color: var(--text2);
+  font-size: 12px;
+}
+
+/* ── データモード ── */
+
+#data-controls {
+  padding: 24px 16px;
+  text-align: center;
+}
+
+#data-status {
+  font-size: 14px;
+  color: var(--text2);
+  margin-bottom: 16px;
+}
+
+#data-status.recording {
+  color: var(--red);
+  font-weight: 600;
+}
+
+#data-timer {
+  margin-top: 12px;
+  font-size: 24px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+#data-timer span:last-child {
+  font-size: 14px;
+  color: var(--text2);
+  margin-left: 12px;
+}
+
+#data-export {
+  padding: 16px;
+}
+
+.export-stats {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: var(--text2);
+}
+
+#data-summary {
+  padding: 8px 0;
+}
+
+.summary-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 16px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.summary-row .s-label { color: var(--text2); min-width: 90px; }
+.summary-row .s-avg { color: var(--text); }
+.summary-row .s-sd { color: var(--text2); }
+
+/* ── レスポンシブ ── */
+
+@media (max-width: 380px) {
+  .metric-label { min-width: 72px; font-size: 12px; }
+  .metric-value { min-width: 50px; font-size: 12px; }
+  .metric-factor { font-size: 9px; }
+}
